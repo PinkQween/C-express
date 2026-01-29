@@ -86,14 +86,14 @@ The fastest way to get started is using the c-express project generator:
 
 ```bash
 # Create a new project
-c-express myHTTPSApp
-cd myHTTPSApp
+c-express myWebApp
+cd myWebApp
 
 # Build and run
 mkdir build && cd build
 cmake ..
 make
-./myHTTPSApp
+./myWebApp
 ```
 
 Or initialize a project in the current directory:

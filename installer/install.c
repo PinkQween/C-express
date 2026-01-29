@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/wait.h>
+#include <ctype.h>
 
 #define MAX_PATH 1024
 #define COLOR_RESET   "\033[0m"
@@ -12,6 +13,28 @@
 #define COLOR_BLUE    "\033[34m"
 #define COLOR_RED     "\033[31m"
 #define COLOR_YELLOW  "\033[33m"
+
+/* Validate path to prevent command injection */
+int is_valid_path(const char *path) {
+    if (!path || strlen(path) == 0) {
+        return 0;
+    }
+    
+    /* Check for dangerous characters */
+    const char *dangerous = ";|&$`<>(){}[]'\"\\!\n\r";
+    for (const char *p = path; *p; p++) {
+        if (strchr(dangerous, *p)) {
+            return 0;
+        }
+    }
+    
+    /* Path should start with / or . or alphanumeric */
+    if (path[0] != '/' && path[0] != '.' && !isalnum(path[0])) {
+        return 0;
+    }
+    
+    return 1;
+}
 
 void print_header(void) {
     printf("\n");
@@ -225,12 +248,20 @@ int main(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--prefix") == 0 && i + 1 < argc) {
             install_prefix = argv[++i];
+            if (!is_valid_path(install_prefix)) {
+                fprintf(stderr, "Error: Invalid installation prefix path\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--no-sudo") == 0) {
             use_sudo = 0;
         } else if (strcmp(argv[i], "--skip-tests") == 0) {
             run_tests_flag = 0;
         } else if (strcmp(argv[i], "--build-dir") == 0 && i + 1 < argc) {
             build_dir = argv[++i];
+            if (!is_valid_path(build_dir)) {
+                fprintf(stderr, "Error: Invalid build directory path\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;

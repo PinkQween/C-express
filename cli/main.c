@@ -150,21 +150,21 @@ int write_file(const char *path, const char *content) {
 }
 
 int create_project(const char *project_name, int in_current_dir) {
-    char path[MAX_PATH];
     char cmake_content[4096];
     char readme_content[2048];
+    char saved_cwd[MAX_PATH];
+    
+    /* Save current directory for restoration */
+    if (getcwd(saved_cwd, sizeof(saved_cwd)) == NULL) {
+        fprintf(stderr, "Error: Failed to get current directory\n");
+        return -1;
+    }
     
     /* Normalize project name */
     const char *normalized_name = project_name;
     if (strcmp(project_name, ".") == 0) {
-        /* Get current directory name */
-        char cwd[MAX_PATH];
-        if (getcwd(cwd, sizeof(cwd)) == NULL) {
-            fprintf(stderr, "Error: Failed to get current directory\n");
-            return -1;
-        }
-        /* Extract directory name */
-        char *dir_name = strrchr(cwd, '/');
+        /* Extract directory name (POSIX-only: uses '/' as path separator) */
+        char *dir_name = strrchr(saved_cwd, '/');
         if (dir_name) {
             normalized_name = dir_name + 1;
         } else {
@@ -188,6 +188,7 @@ int create_project(const char *project_name, int in_current_dir) {
     
     /* Create main.c */
     if (write_file("main.c", main_template) != 0) {
+        chdir(saved_cwd);
         return -1;
     }
     
@@ -195,6 +196,7 @@ int create_project(const char *project_name, int in_current_dir) {
     snprintf(cmake_content, sizeof(cmake_content), cmake_template, 
              normalized_name, normalized_name, normalized_name, normalized_name);
     if (write_file("CMakeLists.txt", cmake_content) != 0) {
+        chdir(saved_cwd);
         return -1;
     }
     
@@ -202,13 +204,18 @@ int create_project(const char *project_name, int in_current_dir) {
     snprintf(readme_content, sizeof(readme_content), readme_template, 
              normalized_name, normalized_name);
     if (write_file("README.md", readme_content) != 0) {
+        chdir(saved_cwd);
         return -1;
     }
     
     /* Create .gitignore */
     if (write_file(".gitignore", gitignore_template) != 0) {
+        chdir(saved_cwd);
         return -1;
     }
+    
+    /* Restore original directory */
+    chdir(saved_cwd);
     
     printf("\n✓ Project created successfully!\n\n");
     printf("Next steps:\n");

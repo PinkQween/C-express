@@ -7,7 +7,7 @@ target_include_directories(test_unit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Integration tests
 add_executable(test_integration test_integration.c)
-target_link_libraries(test_integration PRIVATE cexpress)
+target_link_libraries(test_integration PRIVATE cexpress Threads::Threads)
 target_include_directories(test_integration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Compiler warnings
