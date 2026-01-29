@@ -79,3 +79,22 @@ option(BUILD_EXAMPLES "Build example applications" ON)
 if(BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
+
+# Build CLI tool
+option(BUILD_CLI "Build c-express CLI tool" ON)
+if(BUILD_CLI)
+    add_subdirectory(cli)
+endif()
+
+# Build tests
+option(BUILD_TESTS "Build tests" ON)
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+# Build installer
+option(BUILD_INSTALLER "Build installer" ON)
+if(BUILD_INSTALLER)
+    add_subdirectory(installer)
+endif()

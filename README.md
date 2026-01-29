@@ -14,6 +14,9 @@ C-Express brings the simplicity and elegance of Express.js to C programming. It 
 - 📦 **Lightweight** - Minimal dependencies, pure C implementation
 - 🔧 **CMake Build System** - Easy integration into your projects
 - 🌐 **HTTP Server** - Basic HTTP/1.1 server implementation
+- 🛠️ **Project Generator** - CLI tool to scaffold new C-Express projects
+- 📝 **Automated Installer** - Easy installation script with dependency checking
+- ✅ **Professional Tests** - Comprehensive unit and integration test suite
 
 ## Installation
 
@@ -23,7 +26,29 @@ C-Express brings the simplicity and elegance of Express.js to C programming. It 
 - CMake 3.10 or higher
 - POSIX-compliant system (Linux, macOS, BSD)
 
-### Building from Source
+### Quick Install (Automated)
+
+The easiest way to install C-Express is using the installation script:
+
+```bash
+# Clone the repository
+git clone https://github.com/PinkQween/C-express.git
+cd C-express
+
+# Run the installation script
+./install.sh
+
+# Or with custom options
+./install.sh --prefix /usr/local --skip-tests
+```
+
+Installer options:
+- `--prefix <path>` - Installation prefix (default: /usr/local)
+- `--no-sudo` - Don't use sudo for installation
+- `--skip-tests` - Skip running tests
+- `--build-dir <path>` - Build directory (default: ./build)
+
+### Manual Installation
 
 ```bash
 # Clone the repository
@@ -37,11 +62,54 @@ mkdir build && cd build
 cmake ..
 make
 
-# Optional: Install system-wide
+# Run tests (optional)
+ctest --output-on-failure
+
+# Install system-wide
 sudo make install
 ```
 
+### Verify Installation
+
+After installation, verify that the CLI tool is available:
+
+```bash
+c-express --version
+c-express --help
+```
+
 ## Quick Start
+
+### Creating a New Project
+
+The fastest way to get started is using the c-express project generator:
+
+```bash
+# Create a new project
+c-express myWebApp
+cd myWebApp
+
+# Build and run
+mkdir build && cd build
+cmake ..
+make
+./myWebApp
+```
+
+Or initialize a project in the current directory:
+
+```bash
+mkdir my-project && cd my-project
+c-express .
+
+# Build and run
+mkdir build && cd build
+cmake ..
+make
+./my-project
+```
+
+### Manual Setup
 
 Here's a simple "Hello World" server:
 
@@ -176,6 +244,57 @@ void logger_middleware(cexpress_req *req, cexpress_res *res, void (*next)(void))
 cexpress_use(app, logger_middleware);  /* Registered but not yet executed */
 ```
 
+## Testing
+
+C-Express includes a comprehensive test suite with both unit and integration tests.
+
+### Running Tests
+
+```bash
+# From the build directory
+cd build
+ctest --output-on-failure
+
+# Or run tests directly
+./tests/test_unit
+./tests/test_integration
+```
+
+### Test Structure
+
+The test framework provides:
+- **Unit Tests** - Test individual functions and components
+- **Integration Tests** - Test HTTP server functionality end-to-end
+- **Assertion Macros** - Professional testing utilities
+  - `ASSERT(condition)` - Basic assertion
+  - `ASSERT_EQUAL(a, b)` - Equality check
+  - `ASSERT_NOT_NULL(ptr)` - Null pointer check
+  - `ASSERT_STR_EQUAL(a, b)` - String comparison
+  - `ASSERT_STR_CONTAINS(str, substr)` - Substring check
+
+### Writing Tests
+
+Tests use a simple macro-based framework:
+
+```c
+#include "test_framework.h"
+
+TEST_SUITE(my_feature) {
+    TEST(feature_works) {
+        int result = my_function();
+        ASSERT_EQUAL(result, 42);
+    }
+    END_TEST();
+}
+END_TEST_SUITE()
+
+int main(void) {
+    RUN_TEST_SUITE(my_feature);
+    print_test_summary();
+    return get_test_result();
+}
+```
+
 ## Examples
 
 ### JSON API Server
@@ -227,15 +346,26 @@ Then visit:
 C-express/
 ├── include/
 │   └── cexpress/
-│       └── cexpress.h      # Public API header
+│       └── cexpress.h         # Public API header
 ├── src/
-│   └── cexpress.c          # Implementation
+│   └── cexpress.c             # Implementation
+├── cli/
+│   ├── main.c                 # c-express CLI tool
+│   └── CMakeLists.txt
+├── tests/
+│   ├── test_framework.h       # Test framework
+│   ├── test_unit.c            # Unit tests
+│   ├── test_integration.c     # Integration tests
+│   └── CMakeLists.txt
+├── installer/
+│   ├── install.c              # Automated installer
+│   └── CMakeLists.txt
 ├── examples/
-│   ├── basic_server.c      # Example application
+│   ├── basic_server.c         # Example application
 │   └── CMakeLists.txt
 ├── cmake/
 │   └── CExpressConfig.cmake.in
-├── CMakeLists.txt          # Build configuration
+├── CMakeLists.txt             # Build configuration
 └── README.md
 ```
 
