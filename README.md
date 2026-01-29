@@ -28,23 +28,18 @@ C-Express brings the simplicity and elegance of Express.js to C programming. It 
 
 ### Quick Install (Automated)
 
-The easiest way to install C-Express is using the automated installer:
+The easiest way to install C-Express is using the installation script:
 
 ```bash
 # Clone the repository
 git clone https://github.com/PinkQween/C-express.git
 cd C-express
 
-# Build the installer
-mkdir build && cd build
-cmake ..
-make cexpress-installer
-
-# Run the installer
-./installer/cexpress-installer
+# Run the installation script
+./install.sh
 
 # Or with custom options
-./installer/cexpress-installer --prefix /usr/local --skip-tests
+./install.sh --prefix /usr/local --skip-tests
 ```
 
 Installer options:
