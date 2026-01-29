@@ -72,10 +72,15 @@ static void register_route(cexpress_app *app, const char *path,
         return;
     }
     
-    cexpress_route *route = &app->routes[app->route_count++];
-    route->method = method;
+    cexpress_route *route = &app->routes[app->route_count];
     route->path = strdup(path);
+    if (!route->path) {
+        fprintf(stderr, "Failed to allocate memory for route path\n");
+        return;
+    }
+    route->method = method;
     route->handler = handler;
+    app->route_count++;
 }
 
 /* HTTP method registration functions */
@@ -108,8 +113,17 @@ void cexpress_use(cexpress_app *app, cexpress_middleware_fn middleware) {
 /* Response functions */
 void cexpress_send(cexpress_res *res, int status_code, const char *body) {
     res->status_code = status_code;
-    if (res->body) free(res->body);
-    res->body = strdup(body);
+    if (res->body) {
+        free(res->body);
+        res->body = NULL;
+    }
+    if (body) {
+        res->body = strdup(body);
+        if (!res->body) {
+            /* Allocation failed - use empty string */
+            res->body = strdup("");
+        }
+    }
     res->sent = true;
 }
 
@@ -147,21 +161,36 @@ const char* cexpress_get_param(cexpress_req *req, const char *key) {
 
 /* Parse HTTP request */
 static void parse_request(const char *raw_request, cexpress_req *req) {
-    char method[16], path[256], version[16];
+    char method[16] = {0};
+    char path[1024] = {0};  /* Increased buffer size */
+    char version[16] = {0};
     
-    /* Parse request line */
-    if (sscanf(raw_request, "%15s %255s %15s", method, path, version) == 3) {
+    /* Parse request line - field width limits prevent buffer overflow */
+    if (sscanf(raw_request, "%15s %1023s %15s", method, path, version) == 3) {
         req->method = parse_method(method);
-        req->path = strdup(path);
         
-        /* Parse query string if present */
-        char *query_start = strchr(req->path, '?');
+        /* Find query string before duplicating */
+        char *query_start = strchr(path, '?');
         if (query_start) {
             *query_start = '\0';
+            req->path = strdup(path);
             req->query = strdup(query_start + 1);
+            if (!req->query) {
+                req->query = NULL;  /* Handle strdup failure */
+            }
         } else {
+            req->path = strdup(path);
             req->query = NULL;
         }
+        
+        if (!req->path) {
+            req->path = strdup("/");  /* Fallback to root if allocation fails */
+        }
+    } else {
+        /* Failed to parse - use defaults */
+        req->method = CEXPRESS_GET;
+        req->path = strdup("/");
+        req->query = NULL;
     }
     
     /* Parse body if present */
@@ -170,6 +199,9 @@ static void parse_request(const char *raw_request, cexpress_req *req) {
         body_start += 4;
         if (*body_start) {
             req->body = strdup(body_start);
+            if (!req->body) {
+                req->body = NULL;  /* Handle strdup failure */
+            }
         } else {
             req->body = NULL;
         }
@@ -188,9 +220,19 @@ static char* build_response(cexpress_res *res) {
     if (!response) return NULL;
     
     const char *status_text = "OK";
-    if (res->status_code == 404) status_text = "Not Found";
-    else if (res->status_code == 500) status_text = "Internal Server Error";
-    else if (res->status_code == 201) status_text = "Created";
+    switch (res->status_code) {
+        case 200: status_text = "OK"; break;
+        case 201: status_text = "Created"; break;
+        case 204: status_text = "No Content"; break;
+        case 400: status_text = "Bad Request"; break;
+        case 401: status_text = "Unauthorized"; break;
+        case 403: status_text = "Forbidden"; break;
+        case 404: status_text = "Not Found"; break;
+        case 500: status_text = "Internal Server Error"; break;
+        case 502: status_text = "Bad Gateway"; break;
+        case 503: status_text = "Service Unavailable"; break;
+        default: status_text = "OK"; break;
+    }
     
     snprintf(response, BUFFER_SIZE,
         "HTTP/1.1 %d %s\r\n"
@@ -328,7 +370,12 @@ int cexpress_listen(cexpress_app *app, int port, void (*callback)(void)) {
     
     /* Start server thread */
     pthread_t thread;
-    pthread_create(&thread, NULL, server_thread, app);
+    if (pthread_create(&thread, NULL, server_thread, app) != 0) {
+        perror("pthread_create failed");
+        close(app->server_fd);
+        app->running = false;
+        return -1;
+    }
     pthread_join(thread, NULL);
     
     return 0;

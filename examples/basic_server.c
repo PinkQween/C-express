@@ -5,15 +5,12 @@
 
 /* Global app reference for signal handler */
 cexpress_app *app = NULL;
+volatile sig_atomic_t should_exit = 0;
 
 /* Signal handler for graceful shutdown */
 void handle_signal(int sig) {
     (void)sig;
-    printf("\nShutting down server...\n");
-    if (app) {
-        cexpress_destroy(app);
-    }
-    exit(0);
+    should_exit = 1;
 }
 
 /* Route handlers */

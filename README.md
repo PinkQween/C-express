@@ -10,10 +10,10 @@ C-Express brings the simplicity and elegance of Express.js to C programming. It 
 
 - 🚀 **Simple API** - Familiar Express.js-like syntax
 - 🛣️ **Routing** - Support for GET, POST, PUT, DELETE, and more HTTP methods
-- 🔌 **Middleware** - Extensible middleware support
+- 🔌 **Middleware** - Middleware registration API (framework for future implementation)
 - 📦 **Lightweight** - Minimal dependencies, pure C implementation
 - 🔧 **CMake Build System** - Easy integration into your projects
-- 🧵 **Threaded** - Uses POSIX threads for handling connections
+- 🌐 **HTTP Server** - Basic HTTP/1.1 server implementation
 
 ## Installation
 
@@ -165,13 +165,15 @@ cexpress_set_header(res, "Content-Type", "text/html");
 
 ### Middleware
 
+**Note:** Middleware registration is available via `cexpress_use()`, but middleware execution is not yet implemented in the current version. This API is provided for future compatibility.
+
 ```c
 void logger_middleware(cexpress_req *req, cexpress_res *res, void (*next)(void)) {
     printf("[%s] %s\n", "LOG", req->path);
     next();
 }
 
-cexpress_use(app, logger_middleware);
+cexpress_use(app, logger_middleware);  /* Registered but not yet executed */
 ```
 
 ## Examples
@@ -252,15 +254,27 @@ C-express/
 
 ## Limitations
 
-This is a basic implementation intended for educational purposes and small projects. For production use, consider:
+This is a basic implementation intended for educational purposes and small projects. Current limitations and areas for improvement:
 
-- Implement proper HTTP parsing (currently simplified)
+- **Sequential request handling** - Requests are handled one at a time, not concurrently
+- **Middleware execution** - Middleware registration API exists but execution is not yet implemented
+- **Route parameters** - API exists but parameter parsing (e.g., `/users/:id`) is not implemented
+- **Header storage** - Header get/set functions are stubs; full implementation needed
+- **HTTP parsing** - Simplified parser; production use requires proper HTTP/1.1 compliance
+- **Security** - Not hardened for production use; needs input validation and security auditing
+
+For production use, consider:
+
+- Implement concurrent request handling with thread pool or async I/O
+- Complete middleware execution pipeline
 - Add support for route parameters (e.g., `/users/:id`)
-- Implement proper header storage and retrieval
+- Implement proper header storage and retrieval with hash maps
 - Add HTTPS/TLS support
-- Implement connection pooling
+- Implement connection pooling and keep-alive
 - Add support for static file serving
 - Improve error handling and edge cases
+- Add request size limits and timeouts
+- Security hardening and input validation
 
 ## Contributing
 
