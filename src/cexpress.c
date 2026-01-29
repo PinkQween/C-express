@@ -129,7 +129,9 @@ void cexpress_send(cexpress_res *res, int status_code, const char *body) {
 
 void cexpress_json(cexpress_res *res, const char *json) {
     cexpress_set_header(res, "Content-Type", "application/json");
-    cexpress_send(res, 200, json);
+    /* Use existing status code if set, otherwise default to 200 */
+    int status = (res->status_code > 0) ? res->status_code : 200;
+    cexpress_send(res, status, json);
 }
 
 cexpress_res* cexpress_status(cexpress_res *res, int status_code) {

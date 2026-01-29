@@ -20,7 +20,6 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     )
 endif()
 
-# Add tests to CTest
-enable_testing()
+# Add tests to CTest (enable_testing() called from root CMakeLists.txt)
 add_test(NAME unit_tests COMMAND test_unit)
 add_test(NAME integration_tests COMMAND test_integration)
