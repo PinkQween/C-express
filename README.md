@@ -13,7 +13,9 @@ C-Express brings the simplicity and elegance of Express.js to C programming. It 
 - 🔌 **Middleware** - Middleware registration API (framework for future implementation)
 - 📦 **Lightweight** - Minimal dependencies, pure C implementation
 - 🔧 **CMake Build System** - Easy integration into your projects
-- 🌐 **HTTP Server** - Basic HTTP/1.1 server implementation
+- 🌐 **HTTP/1.1 & HTTP/2** - Modern HTTP protocol support with nghttp2
+- 🔒 **TLS/SSL Support** - HTTPS server with OpenSSL
+- 🔌 **WebSocket** - Full WebSocket protocol support for real-time communication
 - 🛠️ **Project Generator** - CLI tool to scaffold new C-Express projects
 - 📝 **Automated Installer** - Easy installation script with dependency checking
 - ✅ **Professional Tests** - Comprehensive unit and integration test suite
@@ -25,6 +27,8 @@ C-Express brings the simplicity and elegance of Express.js to C programming. It 
 - C compiler (GCC, Clang, or compatible)
 - CMake 3.10 or higher
 - POSIX-compliant system (Linux, macOS, BSD)
+- OpenSSL 1.1+ (for HTTPS/TLS support)
+- libnghttp2 (optional, for HTTP/2 support)
 
 ### Quick Install (Automated)
 
@@ -244,6 +248,69 @@ void logger_middleware(cexpress_req *req, cexpress_res *res, void (*next)(void))
 cexpress_use(app, logger_middleware);  /* Registered but not yet executed */
 ```
 
+### HTTPS/TLS Support
+
+C-Express supports secure HTTPS connections using OpenSSL.
+
+#### Start HTTPS Server
+```c
+cexpress_tls_config tls_config = {
+    .cert_file = "server.crt",       /* Path to SSL certificate */
+    .key_file = "server.key",        /* Path to private key */
+    .ca_file = NULL,                 /* Optional: CA certificate for client verification */
+    .verify_client = false           /* Whether to verify client certificates */
+};
+
+cexpress_listen_https(app, 8443, &tls_config, callback);
+```
+
+#### Generate Self-Signed Certificate (for testing)
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt -days 365 -nodes
+```
+
+### WebSocket Support
+
+C-Express provides full WebSocket protocol support for real-time bidirectional communication.
+
+#### Register WebSocket Route
+```c
+void ws_on_connect(cexpress_ws *ws) {
+    printf("Client connected!\n");
+    cexpress_ws_send_text(ws, "Welcome!");
+}
+
+void ws_on_message(cexpress_ws *ws, const char *message, size_t len, cexpress_ws_opcode opcode) {
+    printf("Received: %s\n", message);
+    
+    /* Echo message back */
+    cexpress_ws_send_text(ws, message);
+    
+    /* Or send binary data */
+    cexpress_ws_send(ws, data, data_len, CEXPRESS_WS_BINARY);
+    
+    /* Close connection */
+    if (strcmp(message, "bye") == 0) {
+        cexpress_ws_close(ws, 1000, "Normal closure");
+    }
+}
+
+cexpress_websocket(app, "/ws", ws_on_connect, ws_on_message);
+```
+
+#### WebSocket Functions
+- `cexpress_websocket(app, path, on_connect, on_message)` - Register WebSocket route
+- `cexpress_ws_send(ws, data, len, opcode)` - Send WebSocket frame
+- `cexpress_ws_send_text(ws, message)` - Send text message
+- `cexpress_ws_close(ws, code, reason)` - Close WebSocket connection
+
+#### WebSocket Opcodes
+- `CEXPRESS_WS_TEXT` - Text message
+- `CEXPRESS_WS_BINARY` - Binary message
+- `CEXPRESS_WS_CLOSE` - Connection close
+- `CEXPRESS_WS_PING` - Ping frame
+- `CEXPRESS_WS_PONG` - Pong frame
+
 ## Testing
 
 C-Express includes a comprehensive test suite with both unit and integration tests.
@@ -324,21 +391,82 @@ int main(void) {
 }
 ```
 
-### Complete Example
+### HTTPS Server Example
 
-See `examples/basic_server.c` for a complete working example with multiple routes and response types.
+```c
+#include "cexpress/cexpress.h"
 
-To run the example:
+void handle_secure(cexpress_req *req, cexpress_res *res) {
+    cexpress_json(res, "{\"message\": \"Secure connection!\"}");
+}
+
+int main(void) {
+    cexpress_app *app = cexpress_create();
+    cexpress_get(app, "/secure", handle_secure);
+    
+    cexpress_tls_config tls = {
+        .cert_file = "server.crt",
+        .key_file = "server.key"
+    };
+    
+    cexpress_listen_https(app, 8443, &tls, NULL);
+    cexpress_destroy(app);
+    return 0;
+}
+```
+
+### WebSocket Server Example
+
+```c
+#include "cexpress/cexpress.h"
+
+void ws_connect(cexpress_ws *ws) {
+    cexpress_ws_send_text(ws, "Welcome!");
+}
+
+void ws_message(cexpress_ws *ws, const char *msg, size_t len, cexpress_ws_opcode op) {
+    cexpress_ws_send_text(ws, msg);  /* Echo */
+}
+
+int main(void) {
+    cexpress_app *app = cexpress_create();
+    cexpress_websocket(app, "/ws", ws_connect, ws_message);
+    
+    cexpress_listen(app, 3000, NULL);
+    cexpress_destroy(app);
+    return 0;
+}
+```
+
+### Running Examples
+
+The repository includes several example applications:
 
 ```bash
 cd build
+
+# Basic HTTP server
 ./examples/basic_server
+
+# HTTPS/TLS server (requires certificate files)
+./examples/https_server
+
+# WebSocket server
+./examples/websocket_server
 ```
 
-Then visit:
+**Basic Server** - http://localhost:3000/
 - http://localhost:3000/ - Simple text response
 - http://localhost:3000/about - HTML page
 - http://localhost:3000/api/json - JSON response
+
+**HTTPS Server** - https://localhost:8443/
+- Demonstrates TLS/SSL encryption
+- Requires server.crt and server.key files
+
+**WebSocket Server** - http://localhost:3000/
+- http://localhost:3000/ - Test page with WebSocket client
+- ws://localhost:3000/ws - WebSocket endpoint
 
 ## Project Structure
 
@@ -381,6 +509,9 @@ C-express/
 | `res.status(404)` | `cexpress_status(res, 404)` |
 | `app.listen(3000, callback)` | `cexpress_listen(app, 3000, callback)` |
 | `app.use(middleware)` | `cexpress_use(app, middleware)` |
+| `https.createServer(options, app)` | `cexpress_listen_https(app, 8443, &tls_config, callback)` |
+| `app.ws('/path', handler)` (via express-ws) | `cexpress_websocket(app, "/ws", on_connect, on_message)` |
+| `ws.send(data)` | `cexpress_ws_send_text(ws, message)` |
 
 ## Limitations
 
@@ -392,6 +523,7 @@ This is a basic implementation intended for educational purposes and small proje
 - **Header storage** - Header get/set functions are stubs; full implementation needed
 - **HTTP parsing** - Simplified parser; production use requires proper HTTP/1.1 compliance
 - **Security** - Not hardened for production use; needs input validation and security auditing
+- **HTTP/2** - nghttp2 library detected but protocol handling not yet implemented
 
 For production use, consider:
 
@@ -399,12 +531,39 @@ For production use, consider:
 - Complete middleware execution pipeline
 - Add support for route parameters (e.g., `/users/:id`)
 - Implement proper header storage and retrieval with hash maps
-- Add HTTPS/TLS support
+- ✅ ~~Add HTTPS/TLS support~~ **IMPLEMENTED**
+- ✅ ~~Add WebSocket support~~ **IMPLEMENTED**
+- ✅ ~~Add proper signal handling for graceful shutdown~~ **IMPLEMENTED**
+- Complete HTTP/2 protocol implementation
 - Implement connection pooling and keep-alive
 - Add support for static file serving
 - Improve error handling and edge cases
 - Add request size limits and timeouts
 - Security hardening and input validation
+
+## Documentation
+
+C-Express uses [Doxygen](https://www.doxygen.nl/) for API documentation generation.
+
+### Generate Documentation
+
+```bash
+# Using the build script (easiest)
+./build_docs.sh
+
+# Using CMake
+cd build
+make docs
+
+# Or directly with Doxygen
+doxygen Doxyfile
+```
+
+The generated documentation will be in the `docs/` directory. Open `docs/index.html` in your browser to view the full API reference.
+
+### Prerequisites
+
+- Doxygen 1.8+ (install with `apt install doxygen` on Debian/Ubuntu)
 
 ## Contributing
 

@@ -19,11 +19,9 @@ fi
 
 cd "$BUILD_DIR"
 
-# Check if CMake files exist
-if [ ! -f "CMakeCache.txt" ]; then
-    echo "Running CMake configuration..."
-    cmake ..
-fi
+# Always reconfigure to pick up any prefix changes
+echo "Running CMake configuration..."
+cmake ..
 
 # Build the installer if needed
 if [ ! -f "installer/cexpress-installer" ]; then
@@ -36,4 +34,5 @@ echo "Running installer..."
 echo ""
 
 # Run the installer with all passed arguments
-exec ./installer/cexpress-installer "$@"
+# Pass the current build directory to the installer
+exec ./installer/cexpress-installer --build-dir "$BUILD_DIR" "$@"

@@ -6,10 +6,19 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/sha.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <poll.h>
 
 #define MAX_ROUTES 100
 #define MAX_MIDDLEWARE 50
+#define MAX_WS_ROUTES 50
 #define BUFFER_SIZE 4096
+#define WS_MAGIC_STRING "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 /* Internal route structure */
 struct cexpress_route {
@@ -23,15 +32,33 @@ struct cexpress_middleware {
     cexpress_middleware_fn fn;
 };
 
+/* WebSocket route structure */
+typedef struct {
+    char *path;
+    cexpress_ws_handler on_connect;
+    cexpress_ws_message_handler on_message;
+} cexpress_ws_route;
+
 /* Application structure */
 struct cexpress_app {
     cexpress_route routes[MAX_ROUTES];
     int route_count;
     cexpress_middleware middlewares[MAX_MIDDLEWARE];
     int middleware_count;
+    cexpress_ws_route ws_routes[MAX_WS_ROUTES];
+    int ws_route_count;
     int server_fd;
     bool running;
+    SSL_CTX *ssl_ctx;  /* TLS context */
+    bool use_tls;      /* Whether TLS is enabled */
 };
+
+/* Forward declarations for static functions */
+static int ws_send_frame(cexpress_ws *ws, const void *data, size_t len, cexpress_ws_opcode opcode);
+static ssize_t ws_read_frame(cexpress_ws *ws, unsigned char *buffer, size_t buffer_size, 
+                              cexpress_ws_opcode *opcode);
+static void handle_websocket(cexpress_app *app, int client_fd, SSL *ssl, 
+                             const char *path, cexpress_ws_route *ws_route);
 
 /* Helper function to parse HTTP method */
 static cexpress_method parse_method(const char *method_str) {
@@ -58,8 +85,16 @@ cexpress_app* cexpress_create(void) {
     
     app->route_count = 0;
     app->middleware_count = 0;
+    app->ws_route_count = 0;
     app->server_fd = -1;
     app->running = false;
+    app->ssl_ctx = NULL;
+    app->use_tls = false;
+    
+    /* Initialize OpenSSL */
+    SSL_library_init();
+    SSL_load_error_strings();
+    OpenSSL_add_all_algorithms();
     
     return app;
 }
@@ -161,6 +196,81 @@ const char* cexpress_get_param(cexpress_req *req, const char *key) {
     return NULL;
 }
 
+/* TLS-aware read/write functions */
+static ssize_t tls_read(SSL *ssl, int fd, void *buf, size_t count) {
+    if (ssl) {
+        return SSL_read(ssl, buf, count);
+    }
+    return read(fd, buf, count);
+}
+
+static ssize_t tls_write(SSL *ssl, int fd, const void *buf, size_t count) {
+    if (ssl) {
+        return SSL_write(ssl, buf, count);
+    }
+    return write(fd, buf, count);
+}
+
+/* Base64 encoding for WebSocket handshake */
+static const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static char* base64_encode(const unsigned char *data, size_t len) {
+    size_t output_len = 4 * ((len + 2) / 3);
+    char *encoded = malloc(output_len + 1);
+    if (!encoded) return NULL;
+    
+    size_t i, j;
+    for (i = 0, j = 0; i < len;) {
+        uint32_t octet_a = i < len ? data[i++] : 0;
+        uint32_t octet_b = i < len ? data[i++] : 0;
+        uint32_t octet_c = i < len ? data[i++] : 0;
+        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
+        
+        encoded[j++] = base64_chars[(triple >> 18) & 0x3F];
+        encoded[j++] = base64_chars[(triple >> 12) & 0x3F];
+        encoded[j++] = (i > len + 1) ? '=' : base64_chars[(triple >> 6) & 0x3F];
+        encoded[j++] = (i > len) ? '=' : base64_chars[triple & 0x3F];
+    }
+    encoded[output_len] = '\0';
+    return encoded;
+}
+
+/* Extract WebSocket key from request */
+static char* extract_ws_key(const char *request) {
+    const char *key_header = "Sec-WebSocket-Key: ";
+    char *key_start = strstr(request, key_header);
+    if (!key_start) return NULL;
+    
+    key_start += strlen(key_header);
+    char *key_end = strstr(key_start, "\r\n");
+    if (!key_end) return NULL;
+    
+    size_t key_len = key_end - key_start;
+    char *key = malloc(key_len + 1);
+    if (!key) return NULL;
+    
+    memcpy(key, key_start, key_len);
+    key[key_len] = '\0';
+    return key;
+}
+
+/* Generate WebSocket accept key */
+static char* generate_ws_accept_key(const char *client_key) {
+    char combined[256];
+    snprintf(combined, sizeof(combined), "%s%s", client_key, WS_MAGIC_STRING);
+    
+    unsigned char hash[SHA_DIGEST_LENGTH];
+    SHA1((unsigned char*)combined, strlen(combined), hash);
+    
+    return base64_encode(hash, SHA_DIGEST_LENGTH);
+}
+
+/* Check if request is WebSocket upgrade */
+static bool is_websocket_upgrade(const char *request) {
+    return strstr(request, "Upgrade: websocket") != NULL &&
+           strstr(request, "Connection: Upgrade") != NULL;
+}
+
 /* Parse HTTP request */
 static void parse_request(const char *raw_request, cexpress_req *req) {
     char method[16] = {0};
@@ -253,17 +363,84 @@ static char* build_response(cexpress_res *res) {
 
 /* Handle client connection */
 static void handle_client(cexpress_app *app, int client_fd) {
+    SSL *ssl = NULL;
+    
+    /* TLS handshake if enabled */
+    if (app->use_tls && app->ssl_ctx) {
+        ssl = SSL_new(app->ssl_ctx);
+        if (!ssl) {
+            close(client_fd);
+            return;
+        }
+        SSL_set_fd(ssl, client_fd);
+        if (SSL_accept(ssl) <= 0) {
+            ERR_print_errors_fp(stderr);
+            SSL_free(ssl);
+            close(client_fd);
+            return;
+        }
+    }
+    
     char buffer[BUFFER_SIZE];
-    ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
+    ssize_t bytes_read = tls_read(ssl, client_fd, buffer, sizeof(buffer) - 1);
     
     if (bytes_read <= 0) {
+        if (ssl) SSL_free(ssl);
         close(client_fd);
         return;
     }
     
     buffer[bytes_read] = '\0';
     
-    /* Create request and response objects */
+    /* Check for WebSocket upgrade */
+    if (is_websocket_upgrade(buffer)) {
+        /* Create request object to get path */
+        cexpress_req req = {0};
+        parse_request(buffer, &req);
+        
+        /* Find matching WebSocket route */
+        for (int i = 0; i < app->ws_route_count; i++) {
+            cexpress_ws_route *ws_route = &app->ws_routes[i];
+            if (match_path(ws_route->path, req.path)) {
+                /* Perform WebSocket handshake */
+                char *client_key = extract_ws_key(buffer);
+                if (client_key) {
+                    char *accept_key = generate_ws_accept_key(client_key);
+                    if (accept_key) {
+                        char handshake[512];
+                        snprintf(handshake, sizeof(handshake),
+                            "HTTP/1.1 101 Switching Protocols\r\n"
+                            "Upgrade: websocket\r\n"
+                            "Connection: Upgrade\r\n"
+                            "Sec-WebSocket-Accept: %s\r\n"
+                            "\r\n", accept_key);
+                        
+                        tls_write(ssl, client_fd, handshake, strlen(handshake));
+                        free(accept_key);
+                        
+                        /* Handle WebSocket connection */
+                        handle_websocket(app, client_fd, ssl, req.path, ws_route);
+                    }
+                    free(client_key);
+                }
+                
+                /* Cleanup and return */
+                if (req.path) free(req.path);
+                if (req.query) free(req.query);
+                if (req.body) free(req.body);
+                if (ssl) SSL_free(ssl);
+                close(client_fd);
+                return;
+            }
+        }
+        
+        /* No WebSocket route found - cleanup */
+        if (req.path) free(req.path);
+        if (req.query) free(req.query);
+        if (req.body) free(req.body);
+    }
+    
+    /* Regular HTTP request */
     cexpress_req req = {0};
     cexpress_res res = {0};
     res.status_code = 200;
@@ -290,7 +467,7 @@ static void handle_client(cexpress_app *app, int client_fd) {
     /* Build and send response */
     char *response = build_response(&res);
     if (response) {
-        write(client_fd, response, strlen(response));
+        tls_write(ssl, client_fd, response, strlen(response));
         free(response);
     }
     
@@ -300,7 +477,110 @@ static void handle_client(cexpress_app *app, int client_fd) {
     if (req.body) free(req.body);
     if (res.body) free(res.body);
     
+    if (ssl) SSL_free(ssl);
     close(client_fd);
+}
+
+/* WebSocket frame parsing and sending */
+static int ws_send_frame(cexpress_ws *ws, const void *data, size_t len, cexpress_ws_opcode opcode) {
+    unsigned char header[14];
+    size_t header_len = 2;
+    
+    header[0] = 0x80 | opcode; /* FIN bit + opcode */
+    
+    if (len < 126) {
+        header[1] = len;
+    } else if (len < 65536) {
+        header[1] = 126;
+        header[2] = (len >> 8) & 0xFF;
+        header[3] = len & 0xFF;
+        header_len = 4;
+    } else {
+        header[1] = 127;
+        for (int i = 0; i < 8; i++) {
+            header[9 - i] = (len >> (i * 8)) & 0xFF;
+        }
+        header_len = 10;
+    }
+    
+    SSL *ssl = (SSL*)ws->ssl;
+    if (tls_write(ssl, ws->fd, header, header_len) < 0) return -1;
+    if (len > 0 && tls_write(ssl, ws->fd, data, len) < 0) return -1;
+    
+    return 0;
+}
+
+static ssize_t ws_read_frame(cexpress_ws *ws, unsigned char *buffer, size_t buffer_size, 
+                              cexpress_ws_opcode *opcode) {
+    unsigned char header[14];
+    SSL *ssl = (SSL*)ws->ssl;
+    
+    if (tls_read(ssl, ws->fd, header, 2) < 2) return -1;
+    
+    *opcode = header[0] & 0x0F;
+    bool masked = (header[1] & 0x80) != 0;
+    uint64_t payload_len = header[1] & 0x7F;
+    
+    if (payload_len == 126) {
+        if (tls_read(ssl, ws->fd, header + 2, 2) < 2) return -1;
+        payload_len = (header[2] << 8) | header[3];
+    } else if (payload_len == 127) {
+        if (tls_read(ssl, ws->fd, header + 2, 8) < 8) return -1;
+        payload_len = 0;
+        for (int i = 0; i < 8; i++) {
+            payload_len = (payload_len << 8) | header[2 + i];
+        }
+    }
+    
+    unsigned char mask[4] = {0};
+    if (masked) {
+        if (tls_read(ssl, ws->fd, mask, 4) < 4) return -1;
+    }
+    
+    if (payload_len > buffer_size) return -1;
+    
+    ssize_t bytes_read = tls_read(ssl, ws->fd, buffer, payload_len);
+    if (bytes_read < 0) return -1;
+    
+    if (masked) {
+        for (size_t i = 0; i < payload_len; i++) {
+            buffer[i] ^= mask[i % 4];
+        }
+    }
+    
+    return payload_len;
+}
+
+/* Handle WebSocket connection */
+static void handle_websocket(cexpress_app *app, int client_fd, SSL *ssl, 
+                             const char *path, cexpress_ws_route *ws_route) {
+    cexpress_ws ws = {0};
+    ws.fd = client_fd;
+    ws.ssl = ssl;
+    ws.closed = false;
+    
+    if (ws_route->on_connect) {
+        ws_route->on_connect(&ws);
+    }
+    
+    unsigned char buffer[BUFFER_SIZE];
+    while (!ws.closed && app->running) {
+        cexpress_ws_opcode opcode;
+        ssize_t len = ws_read_frame(&ws, buffer, sizeof(buffer), &opcode);
+        
+        if (len < 0) break;
+        
+        if (opcode == CEXPRESS_WS_CLOSE) {
+            ws.closed = true;
+            ws_send_frame(&ws, NULL, 0, CEXPRESS_WS_CLOSE);
+            break;
+        } else if (opcode == CEXPRESS_WS_PING) {
+            ws_send_frame(&ws, buffer, len, CEXPRESS_WS_PONG);
+        } else if (ws_route->on_message) {
+            buffer[len] = '\0';
+            ws_route->on_message(&ws, (char*)buffer, len, opcode);
+        }
+    }
 }
 
 /* Server thread function */
@@ -309,9 +589,45 @@ static void* server_thread(void *arg) {
     struct sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
     
+    /* Set socket to non-blocking mode */
+    int flags = fcntl(app->server_fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(app->server_fd, F_SETFL, flags | O_NONBLOCK);
+    }
+    
     while (app->running) {
+        /* Use poll to wait with timeout so we can check running flag */
+        struct pollfd pfd = {
+            .fd = app->server_fd,
+            .events = POLLIN,
+            .revents = 0
+        };
+        
+        int poll_result = poll(&pfd, 1, 100); /* 100ms timeout */
+        
+        if (poll_result < 0) {
+            if (errno == EINTR) {
+                /* Interrupted by signal, check running flag */
+                continue;
+            }
+            if (app->running) {
+                perror("poll failed");
+            }
+            break;
+        }
+        
+        if (poll_result == 0) {
+            /* Timeout, check running flag and continue */
+            continue;
+        }
+        
+        /* Socket is ready for accept */
         int client_fd = accept(app->server_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                /* No connection available right now */
+                continue;
+            }
             if (app->running) {
                 perror("accept failed");
             }
@@ -383,6 +699,122 @@ int cexpress_listen(cexpress_app *app, int port, void (*callback)(void)) {
     return 0;
 }
 
+/* Start listening with HTTPS/TLS */
+int cexpress_listen_https(cexpress_app *app, int port, const cexpress_tls_config *tls_config, 
+                          void (*callback)(void)) {
+    if (!tls_config || !tls_config->cert_file || !tls_config->key_file) {
+        fprintf(stderr, "TLS config, cert_file, and key_file are required\n");
+        return -1;
+    }
+    
+    /* Create SSL context */
+    app->ssl_ctx = SSL_CTX_new(TLS_server_method());
+    if (!app->ssl_ctx) {
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+    
+    /* Load certificate */
+    if (SSL_CTX_use_certificate_file(app->ssl_ctx, tls_config->cert_file, SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        SSL_CTX_free(app->ssl_ctx);
+        app->ssl_ctx = NULL;
+        return -1;
+    }
+    
+    /* Load private key */
+    if (SSL_CTX_use_PrivateKey_file(app->ssl_ctx, tls_config->key_file, SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        SSL_CTX_free(app->ssl_ctx);
+        app->ssl_ctx = NULL;
+        return -1;
+    }
+    
+    /* Verify private key */
+    if (!SSL_CTX_check_private_key(app->ssl_ctx)) {
+        fprintf(stderr, "Private key does not match certificate\n");
+        SSL_CTX_free(app->ssl_ctx);
+        app->ssl_ctx = NULL;
+        return -1;
+    }
+    
+    /* Optional: Load CA cert for client verification */
+    if (tls_config->ca_file) {
+        if (SSL_CTX_load_verify_locations(app->ssl_ctx, tls_config->ca_file, NULL) != 1) {
+            ERR_print_errors_fp(stderr);
+        }
+        if (tls_config->verify_client) {
+            SSL_CTX_set_verify(app->ssl_ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+        }
+    }
+    
+    app->use_tls = true;
+    
+    /* Call regular listen */
+    return cexpress_listen(app, port, callback);
+}
+
+/* WebSocket route registration */
+void cexpress_websocket(cexpress_app *app, const char *path,
+                        cexpress_ws_handler on_connect,
+                        cexpress_ws_message_handler on_message) {
+    if (app->ws_route_count >= MAX_WS_ROUTES) {
+        fprintf(stderr, "Maximum number of WebSocket routes reached\n");
+        return;
+    }
+    
+    cexpress_ws_route *ws_route = &app->ws_routes[app->ws_route_count];
+    ws_route->path = strdup(path);
+    if (!ws_route->path) {
+        fprintf(stderr, "Failed to allocate memory for WebSocket route path\n");
+        return;
+    }
+    ws_route->on_connect = on_connect;
+    ws_route->on_message = on_message;
+    app->ws_route_count++;
+}
+
+/* WebSocket send functions */
+int cexpress_ws_send(cexpress_ws *ws, const void *message, size_t len, cexpress_ws_opcode opcode) {
+    if (!ws || ws->closed) return -1;
+    return ws_send_frame(ws, message, len, opcode);
+}
+
+int cexpress_ws_send_text(cexpress_ws *ws, const char *message) {
+    if (!ws || !message) return -1;
+    return cexpress_ws_send(ws, message, strlen(message), CEXPRESS_WS_TEXT);
+}
+
+void cexpress_ws_close(cexpress_ws *ws, int code, const char *reason) {
+    if (!ws || ws->closed) return;
+    
+    unsigned char close_frame[125];
+    close_frame[0] = (code >> 8) & 0xFF;
+    close_frame[1] = code & 0xFF;
+    
+    size_t reason_len = 0;
+    if (reason) {
+        reason_len = strlen(reason);
+        if (reason_len > 123) reason_len = 123;
+        memcpy(close_frame + 2, reason, reason_len);
+    }
+    
+    ws_send_frame(ws, close_frame, 2 + reason_len, CEXPRESS_WS_CLOSE);
+    ws->closed = true;
+}
+
+/* Stop the server gracefully */
+void cexpress_stop(cexpress_app *app) {
+    if (!app) return;
+    
+    app->running = false;
+    
+    /* Close server socket to wake up accept() if it's blocking */
+    if (app->server_fd >= 0) {
+        shutdown(app->server_fd, SHUT_RDWR);
+    }
+}
+
 /* Destroy express app and free resources */
 void cexpress_destroy(cexpress_app *app) {
     if (!app) return;
@@ -393,10 +825,22 @@ void cexpress_destroy(cexpress_app *app) {
         close(app->server_fd);
     }
     
+    /* Free SSL context */
+    if (app->ssl_ctx) {
+        SSL_CTX_free(app->ssl_ctx);
+    }
+    
     /* Free routes */
     for (int i = 0; i < app->route_count; i++) {
         if (app->routes[i].path) {
             free(app->routes[i].path);
+        }
+    }
+    
+    /* Free WebSocket routes */
+    for (int i = 0; i < app->ws_route_count; i++) {
+        if (app->ws_routes[i].path) {
+            free(app->ws_routes[i].path);
         }
     }
     

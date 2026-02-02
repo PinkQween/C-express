@@ -152,8 +152,21 @@ int build_library(const char *build_dir, const char *install_prefix) {
         return -1;
     }
     
-    /* Run make */
-    if (run_command("make -j$(nproc 2>/dev/null || echo 2)") != 0) {
+    /* Run make with parallel jobs */
+    /* Get number of cores */
+    FILE *fp = popen("nproc 2>/dev/null", "r");
+    int cores = 2; /* default */
+    if (fp != NULL) {
+        if (fscanf(fp, "%d", &cores) != 1) {
+            cores = 2;
+        }
+        pclose(fp);
+    }
+    
+    char make_cmd[256];
+    snprintf(make_cmd, sizeof(make_cmd), "make -j%d", cores);
+    
+    if (run_command(make_cmd) != 0) {
         chdir(cwd);
         return -1;
     }
@@ -230,8 +243,8 @@ int run_tests(const char *build_dir) {
 void print_usage(const char *prog) {
     printf("Usage: %s [OPTIONS]\n\n", prog);
     printf("Options:\n");
-    printf("  --prefix <path>    Installation prefix (default: /usr/local)\n");
-    printf("  --no-sudo          Don't use sudo for installation\n");
+    printf("  --prefix <path>    Installation prefix (default: ~/.local)\n");
+    printf("  --sudo             Use sudo for installation\n");
     printf("  --skip-tests       Skip running tests\n");
     printf("  --build-dir <path> Build directory (default: ./build)\n");
     printf("  -h, --help         Show this help message\n");
@@ -239,9 +252,18 @@ void print_usage(const char *prog) {
 }
 
 int main(int argc, char *argv[]) {
-    const char *install_prefix = NULL;
+    /* Get home directory for default installation */
+    const char *home = getenv("HOME");
+    char default_prefix[MAX_PATH];
+    if (home && strlen(home) > 0) {
+        snprintf(default_prefix, sizeof(default_prefix), "%s/.local", home);
+    } else {
+        snprintf(default_prefix, sizeof(default_prefix), "/usr/local");
+    }
+    
+    const char *install_prefix = default_prefix;
     const char *build_dir = "build";
-    int use_sudo = 1;
+    int use_sudo = 0;  /* Default to no sudo since we're using ~/.local */
     int run_tests_flag = 1;
     
     /* Parse arguments */
@@ -252,8 +274,8 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Error: Invalid installation prefix path\n");
                 return 1;
             }
-        } else if (strcmp(argv[i], "--no-sudo") == 0) {
-            use_sudo = 0;
+        } else if (strcmp(argv[i], "--sudo") == 0) {
+            use_sudo = 1;
         } else if (strcmp(argv[i], "--skip-tests") == 0) {
             run_tests_flag = 0;
         } else if (strcmp(argv[i], "--build-dir") == 0 && i + 1 < argc) {
@@ -304,9 +326,9 @@ int main(int argc, char *argv[]) {
     }
     
     printf("\n");
-    printf(COLOR_GREEN "╔══════════════════════════════════════╗\n");
-    printf("║  Installation completed successfully! ║\n");
-    printf("╚══════════════════════════════════════╝\n" COLOR_RESET);
+    printf(COLOR_GREEN "╔═════════════════════════════════════╗\n");
+    printf("║ Installation completed successfully! ║\n");
+    printf("╚═════════════════════════════════════╝\n" COLOR_RESET);
     printf("\n");
     printf("You can now:\n");
     printf("  - Create a new project: " COLOR_BLUE "c-express myapp" COLOR_RESET "\n");
